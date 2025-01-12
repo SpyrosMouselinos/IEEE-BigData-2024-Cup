@@ -8,6 +8,7 @@ from tqdm import tqdm
 import time
 from sklearn.metrics import mean_squared_error
 import chess
+from filters import filter_rating, filter_rating_deviation
 
 class Solution(ABC):
     """Abstract base class for chess puzzle rating prediction solutions."""
@@ -160,10 +161,14 @@ class StaticFeaturesSolution(Solution):
         
         self.pipeline = Pipeline([
             ('xgb', XGBRegressor(
-                n_estimators=100,
-                learning_rate=0.1,
+                n_estimators=500,
+                learning_rate=0.05,
                 random_state=42,
-                tree_method='hist',       # Use 'hist' for faster training
+                max_depth=12,
+                colsample_bytree=0.7,
+                reg_alpha=10,
+                tree_method='hist',   
+                min_child_weight=1,
                 objective='reg:squarederror'
             ))
         ])
@@ -240,9 +245,9 @@ class StaticFeaturesSolution(Solution):
             })
         else:
             features.update({
-                'king_distance': None,
-                'king_manhattan_distance': None,
-                'king_knight_distance': None
+                'king_distance': -1,
+                'king_manhattan_distance': -1,
+                'king_knight_distance': -1
             })
         
         # Center and extended center control
@@ -429,67 +434,14 @@ class StaticFeaturesSolution(Solution):
         return features
     
     def train(self, train_df: pd.DataFrame) -> None:
-        """Train model using Bayesian optimization for hyperparameter tuning."""
-        from skopt import BayesSearchCV
-        from skopt.space import Real, Integer
-        
-        # Create features
+        """Train model using Bayesian optimization for hyperparameter tuning."""        
         print("Creating features...")
         X = pd.DataFrame([
             self._create_features(fen, moves) 
             for fen, moves in tqdm(zip(train_df['FEN'], train_df['Moves']))
         ])
-        X.to_csv('X_filtered.csv')
-        y = train_df['Rating']
-        
-        # Define parameter search space
-        param_space = {
-            'xgb__n_estimators': Integer(100, 500),
-            'xgb__max_depth': Integer(4, 12),
-            'xgb__learning_rate': Real(0.01, 0.3, prior='log-uniform'),
-            'xgb__min_child_weight': Integer(1, 7),
-            'xgb__gamma': Real(1e-9, 0.3, prior='log-uniform'),
-            'xgb__subsample': Real(0.6, 1.0),
-            'xgb__colsample_bytree': Real(0.6, 1.0),
-            'xgb__reg_alpha': Real(1e-9, 10.0, prior='log-uniform'),
-            'xgb__reg_lambda': Real(1e-9, 10.0, prior='log-uniform')
-        }
-        
-        # Set up Bayesian optimization
-        print("Starting Bayesian optimization...")
-        bayes_search = BayesSearchCV(
-            self.pipeline,
-            param_space,
-            n_iter=50,           # Number of parameter settings to try
-            cv=5,               # Number of cross-validation folds
-            scoring='neg_mean_squared_error',
-            n_jobs=-1,          # Use all CPU cores
-            verbose=1,
-            random_state=42,
-            n_points=4,         # Number of parameters to sample in parallel
-            optimizer_kwargs={'base_estimator': 'GP'},  # Use Gaussian Process as surrogate model
-        )
-        
-        start_time = time.time()
-        bayes_search.fit(X, y)
-        elapsed_time = time.time() - start_time
-        print(f"Training completed in {elapsed_time:.2f} seconds")
-        
-        # Print results
-        print(f"Best parameters: {bayes_search.best_params_}")
-        print(f"Best cross-validation score: {-bayes_search.best_score_:.2f} MSE")
-        
-        # Print optimization history
-        print("\nOptimization History:")
-        for i, res in enumerate(bayes_search.cv_results_['mean_test_score']):
-            print(f"Iteration {i+1}: MSE = {-res:.2f}")
-        
-        # Train final model on full dataset
-        print("Training final model on full dataset...")
-        self.pipeline.set_params(**bayes_search.best_params_)
+        y = train_df['Rating']        
         self.pipeline.fit(X, y)
-        
-        # Print final training score
         final_mse = mean_squared_error(y, self.pipeline.predict(X))
         print(f"Final MSE on full dataset: {final_mse:.2f}")
         
@@ -514,9 +466,10 @@ class StaticFeaturesSolution(Solution):
 
 if __name__ == "__main__":
     # Example training script
-    train_df = pd.read_csv('./data/lichess_db_puzzle.csv')
-    # Randomly sample 1_000_000 rows
-    train_df = train_df.sample(n=1000000, random_state=42)
+    train_df = pd.read_csv('C:\\Users\\Dell\\Desktop\\IEEE-BigData-2024-Cup\\data\\lichess_db_puzzle.csv')
+    train_df = filter_rating(train_df, 400, 3000)
+    train_df = filter_rating_deviation(train_df, 0, 200)
+    train_df = train_df.sample(n=100_000, random_state=42)
 
     solution = StaticFeaturesSolution()
     solution.train(train_df)

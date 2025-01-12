@@ -5,47 +5,8 @@ import pandas as pd
 import os
 import sys
 from solutions import PolynomialMovesSolution, StaticFeaturesSolution
-
-
 # Add data folder to pythonpath
 sys.path.append(os.path.join(os.path.dirname(__file__), 'data'))
-
-# Helper functions
-def count_pieces(fen):
-    """Count pieces for both colors from FEN"""
-    board = chess.Board(fen)
-    
-    # Count pieces for both colors
-    white_pieces = {
-        'P': len(board.pieces(chess.PAWN, chess.WHITE)),
-        'N': len(board.pieces(chess.KNIGHT, chess.WHITE)),
-        'B': len(board.pieces(chess.BISHOP, chess.WHITE)),
-        'R': len(board.pieces(chess.ROOK, chess.WHITE)),
-        'Q': len(board.pieces(chess.QUEEN, chess.WHITE)),
-    }
-    
-    black_pieces = {
-        'p': len(board.pieces(chess.PAWN, chess.BLACK)),
-        'n': len(board.pieces(chess.KNIGHT, chess.BLACK)),
-        'b': len(board.pieces(chess.BISHOP, chess.BLACK)),
-        'r': len(board.pieces(chess.ROOK, chess.BLACK)),
-        'q': len(board.pieces(chess.QUEEN, chess.BLACK)),
-    }
-    
-    return white_pieces, black_pieces
-
-def material_difference(fen):
-    """Calculate material difference (white - black)"""
-    white_pieces, black_pieces = count_pieces(fen)
-    
-    # Standard piece values
-    values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9}
-    
-    white_material = sum(count * values[piece] for piece, count in white_pieces.items())
-    black_material = sum(count * values[piece.upper()] for piece, count in black_pieces.items())
-    
-    return white_material - black_material
-
 
 # MSE SCORE: 165_286
 def mean_based_prediction(row):
@@ -66,6 +27,7 @@ def polynomial_moves_prediction(row):
     # Round to the nearest multiple of 10
     return round(float_prediction / 10) * 10
 
+# MSE SCORE: 
 def static_features_prediction(row):
     """Make predictions using the trained StaticFeaturesSolution model"""
     # Load model if not already loaded
@@ -90,7 +52,7 @@ def create_submission(evaluation_method, evaluation_method_name):
         predictions.append(pred)
     
     
-    with open(f'../submissions/submission_{evaluation_method_name}.txt', 'w') as f:
+    with open(f'C:\\Users\\Dell\\Desktop\\IEEE-BigData-2024-Cup\\submissions\\submission_{evaluation_method_name}.txt', 'w') as f:
         for pred in predictions:
             f.write(f"{pred}\n")
     
