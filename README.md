@@ -28,5 +28,7 @@ Download the data from the link: https://knowledgepit.ai/predicting-chess-puzzle
 
 * Install zstandard: `pip install zstandard`
 
+Step 2:
 
+* Install python-chess: `pip install python-chess`
 
