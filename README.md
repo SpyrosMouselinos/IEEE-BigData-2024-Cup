@@ -19,3 +19,14 @@ IEEE Big Data 2024: We will encourage the top 3 winners to submit papers describ
 The competition aims to predict the difficulty of chess puzzles based on board configurations and moves that the solution to each puzzle consists of. The difficulty level is measured as the rating on the lichess platform. The top 3 solutions will be awarded prizes. IEEE BigData 2024 Cup: Predicting Chess Puzzle Difficulty is the sixth data science competition organized in association with the IEEE International Conference on Big Data series (IEEE BigData 2024, https://www3.cs.stonybrook.edu/~ieeebigdata2024/index.html).
 
 ---
+
+Step 1: 
+
+Download the data from the link: https://knowledgepit.ai/predicting-chess-puzzle-difficulty/
+
+* Save the data in the folder `/data`
+
+* Install zstandard: `pip install zstandard`
+
+
+
