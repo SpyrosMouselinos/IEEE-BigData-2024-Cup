@@ -9,6 +9,10 @@ import time
 from sklearn.metrics import mean_squared_error
 import chess
 from filters import filter_rating, filter_rating_deviation
+import numpy as np
+import chess.engine
+
+STOCKFISH_BIN_PATH = "C:\\Users\\Dell\\Desktop\\IEEE-BigData-2024-Cup\\stockfish\\stockfish-windows-x86-64-avx2.exe"
 
 class Solution(ABC):
     """Abstract base class for chess puzzle rating prediction solutions."""
@@ -464,13 +468,172 @@ class StaticFeaturesSolution(Solution):
         else:
             raise FileNotFoundError(f"No saved model found at {self.model_path}")
 
+class StockfishSolution(StaticFeaturesSolution):
+    def __init__(self):
+        super().__init__()
+        # Initialize Stockfish engine
+        try:
+            self.engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_BIN_PATH)
+            # Set engine options (only those that aren't automatically managed)
+            self.engine.configure({
+                "Threads": 4,
+                "Hash": 512
+            })
+        except Exception as e:
+            print(f"Error initializing Stockfish: {e}")
+            print("Make sure Stockfish is installed and accessible")
+            self.engine = None
+
+    def _get_stockfish_evaluation(self, fen: str) -> dict:
+        """Get evaluation from Stockfish for a given position."""
+        if not self.engine:
+            return {
+                'eval': 0,
+                'best_moves': [],
+                'mate_score': None
+            }
+
+        try:
+            board = chess.Board(fen)
+            # Analyze position with time limit and multipv
+            info = self.engine.analyse(
+                board,
+                chess.engine.Limit(time=0.1),
+                multipv=3
+            )
+            
+            # Process evaluation from main line
+            main_line = info[0]
+            score = main_line["score"].relative.score()
+            mate_score = main_line["score"].relative.mate()
+            
+            return {
+                'eval': score if score is not None else (10000 if mate_score > 0 else -10000),
+                'best_moves': [line["pv"][0] for line in info if "pv" in line],
+                'mate_score': mate_score
+            }
+            
+        except Exception as e:
+            print(f"Error in Stockfish evaluation: {e}")
+            return {
+                'eval': 0,
+                'best_moves': [],
+                'mate_score': None
+            }
+
+    def _create_features(self, fen: str, moves: str) -> dict:
+        """Create features from position and moves, including Stockfish analysis."""
+        # Get all static features from parent class
+        features = super()._create_features(fen, moves)
+        
+        # Add Stockfish-based features
+        stockfish_eval = self._get_stockfish_evaluation(fen)
+        
+        # 1. Position evaluation features
+        features.update({
+            'stockfish_eval': stockfish_eval['eval'],
+            'stockfish_mate_in': stockfish_eval['mate_score'] if stockfish_eval['mate_score'] else 0,
+            'is_mate_position': 1 if stockfish_eval['mate_score'] is not None else 0,
+        })
+        
+        # 2. Best move analysis
+        best_moves = stockfish_eval['best_moves']
+        features.update({
+            'num_good_moves': len(best_moves),
+            'best_move_matches': 1 if moves.split()[0] in [m.uci() for m in best_moves] else 0,
+        })
+        
+        # 3. Position complexity analysis
+        board = chess.Board(fen)
+        move_list = moves.split()
+        
+        try:
+            # Analyze position after each move
+            cumulative_eval_change = 0
+            eval_changes = []
+            
+            current_eval = stockfish_eval['eval']
+            for move in move_list:
+                board.push_uci(move)
+                next_eval = self._get_stockfish_evaluation(board.fen())['eval']
+                eval_change = abs(next_eval - current_eval)
+                
+                cumulative_eval_change += eval_change
+                eval_changes.append(eval_change)
+                current_eval = next_eval
+                
+            # Add complexity and tactical features
+            features.update({
+                'position_volatility': np.std(eval_changes) if eval_changes else 0,
+                'avg_eval_change': cumulative_eval_change / len(move_list) if move_list else 0,
+                'max_eval_change': max(eval_changes) if eval_changes else 0,
+                'final_position_eval': current_eval,
+                'eval_improvement': current_eval - stockfish_eval['eval'],
+                'involves_sacrifice': 1 if any(ec > 100 for ec in eval_changes) else 0,
+                'position_sharpness': sum(1 for ec in eval_changes if ec > 50) / len(eval_changes) if eval_changes else 0,
+                'requires_precise_play': 1 if len(best_moves) == 1 and abs(stockfish_eval['eval']) > 100 else 0,
+            })
+            
+        except Exception as e:
+            print(f"Error in Stockfish feature creation: {e}")
+            # Provide default values if analysis fails
+            features.update({
+                'position_volatility': 0,
+                'avg_eval_change': 0,
+                'max_eval_change': 0,
+                'final_position_eval': 0,
+                'eval_improvement': 0,
+                'involves_sacrifice': 0,
+                'position_sharpness': 0,
+                'requires_precise_play': 0,
+            })
+        
+        return features
+
+    def train(self, train_df: pd.DataFrame) -> None:
+        """Train model using Bayesian optimization for hyperparameter tuning."""        
+        print("Creating features...")
+        X = pd.DataFrame([
+            self._create_features(fen, moves) 
+            for fen, moves in tqdm(zip(train_df['FEN'], train_df['Moves']))
+        ])
+        y = train_df['Rating']        
+        self.pipeline.fit(X, y)
+        final_mse = mean_squared_error(y, self.pipeline.predict(X))
+        print(f"Final MSE on full dataset: {final_mse:.2f}")
+        
+        # Save the final model
+        self.model = self.pipeline
+        self.save()
+    
+    def predict_single(self, row: pd.Series) -> float:
+        """Predict rating for a single puzzle."""
+        if self.pipeline is None:
+            raise ValueError("Model not trained or loaded. Call train() or load() first.")
+        
+        X = pd.DataFrame([self._create_features(row['FEN'], row['Moves'])])
+        return float(self.pipeline.predict(X)[0])
+
+    def close(self):
+        """Properly close the engine."""
+        if hasattr(self, 'engine') and self.engine:
+            try:
+                self.engine.quit()
+            except chess.engine.EngineTerminatedError:
+                pass  # Ignore if engine already terminated
+
+    def __del__(self):
+        """Cleanup: Make sure to close the engine properly."""
+        self.close()
+
+
 if __name__ == "__main__":
     # Example training script
     train_df = pd.read_csv('/workspace/experimental/IEEE-BigData-2024-Cup/data/lichess_db_puzzle.csv')
     train_df = filter_rating(train_df, 400, 3000)
     train_df = filter_rating_deviation(train_df, 0, 200)
-    #train_df = train_df.sample(n=100_000, random_state=42)
+    train_df = train_df.sample(n=10_000, random_state=42)
 
-    solution = StaticFeaturesSolution()
+    solution = StockfishSolution()
     solution.train(train_df)
     print("Model trained and saved successfully.")   

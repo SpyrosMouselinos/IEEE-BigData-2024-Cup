@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import os
 import sys
-from solutions import PolynomialMovesSolution, StaticFeaturesSolution
+from solutions import PolynomialMovesSolution, StaticFeaturesSolution, StockfishSolution
 # Add data folder to pythonpath
 sys.path.append(os.path.join(os.path.dirname(__file__), 'data'))
 
@@ -39,6 +39,15 @@ def static_features_prediction(row):
     float_prediction = static_features_prediction.model.predict_single(row)
     
     # Round to nearest multiple of 5 and clip to valid range
+    return round(float_prediction)
+
+def stockfish_prediction(row):
+    """Make predictions using the trained StockfishSolution model"""
+    if not hasattr(stockfish_prediction, 'model'):
+        stockfish_prediction.model = StockfishSolution()
+        stockfish_prediction.model.load()
+    
+    float_prediction = stockfish_prediction.model.predict_single(row)
     return round(float_prediction)
 
 def create_submission(evaluation_method, evaluation_method_name):
