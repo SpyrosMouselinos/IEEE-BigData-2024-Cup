@@ -27,7 +27,7 @@ def polynomial_moves_prediction(row):
     # Round to the nearest multiple of 10
     return round(float_prediction / 10) * 10
 
-# MSE SCORE: 120_000
+# MSE SCORE: 114_157
 def static_features_prediction(row):
     """Make predictions using the trained StaticFeaturesSolution model"""
     # Load model if not already loaded
@@ -39,10 +39,10 @@ def static_features_prediction(row):
     float_prediction = static_features_prediction.model.predict_single(row)
     
     # Round to nearest multiple of 5 and clip to valid range
-    return round(float_prediction / 5) * 5
+    return round(float_prediction)
 
 def create_submission(evaluation_method, evaluation_method_name):
-    test_df = pd.read_csv('C:\\Users\\Dell\\Desktop\\IEEE-BigData-2024-Cup\\data\\test_data_set.csv')
+    test_df = pd.read_csv('/workspace/experimental/IEEE-BigData-2024-Cup/data/test_data_set.csv')
     
     # Generate predictions
     predictions = []
@@ -52,7 +52,7 @@ def create_submission(evaluation_method, evaluation_method_name):
         predictions.append(pred)
     
     
-    with open(f'C:\\Users\\Dell\\Desktop\\IEEE-BigData-2024-Cup\\submissions\\submission_{evaluation_method_name}.txt', 'w') as f:
+    with open(f'/workspace/experimental/IEEE-BigData-2024-Cup/submissions/submission_{evaluation_method_name}.txt', 'w') as f:
         for pred in predictions:
             f.write(f"{pred}\n")
     
