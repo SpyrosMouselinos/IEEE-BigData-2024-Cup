@@ -27,7 +27,7 @@ def polynomial_moves_prediction(row):
     # Round to the nearest multiple of 10
     return round(float_prediction / 10) * 10
 
-# MSE SCORE: 114_157
+# MSE SCORE: 112_157
 def static_features_prediction(row):
     """Make predictions using the trained StaticFeaturesSolution model"""
     # Load model if not already loaded
@@ -51,7 +51,7 @@ def stockfish_prediction(row):
     return round(float_prediction)
 
 def create_submission(evaluation_method, evaluation_method_name):
-    test_df = pd.read_csv('/workspace/experimental/IEEE-BigData-2024-Cup/data/test_data_set.csv')
+    test_df = pd.read_csv('C:\\Users\\Dell\\Desktop\\IEEE-BigData-2024-Cup\\data\\test_data_set.csv')
     
     # Generate predictions
     predictions = []
@@ -61,7 +61,7 @@ def create_submission(evaluation_method, evaluation_method_name):
         predictions.append(pred)
     
     
-    with open(f'/workspace/experimental/IEEE-BigData-2024-Cup/submissions/submission_{evaluation_method_name}.txt', 'w') as f:
+    with open(f'C:\\Users\\Dell\\Desktop\\IEEE-BigData-2024-Cup\\submissions\\submission_{evaluation_method_name}.txt', 'w') as f:
         for pred in predictions:
             f.write(f"{pred}\n")
     
@@ -95,7 +95,7 @@ def estimate_mse_score(evaluation_method, evaluation_method_name):
 if __name__ == "__main__":
     # Create submission with the static features model
     print("Creating submission with static features model...")
-    create_submission(static_features_prediction, 'static_features')
+    create_submission(stockfish_prediction, 'stockfish_features')
     
     
     # You can keep the other models for comparison

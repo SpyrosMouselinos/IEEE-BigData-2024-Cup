@@ -629,7 +629,7 @@ class StockfishSolution(StaticFeaturesSolution):
 
 if __name__ == "__main__":
     # Example training script
-    train_df = pd.read_csv('/workspace/experimental/IEEE-BigData-2024-Cup/data/lichess_db_puzzle.csv')
+    train_df = pd.read_csv('C:\\Users\\Dell\\Desktop\\IEEE-BigData-2024-Cup\\data\\lichess_db_puzzle.csv')
     train_df = filter_rating(train_df, 400, 3000)
     train_df = filter_rating_deviation(train_df, 0, 200)
     train_df = train_df.sample(n=10_000, random_state=42)
