@@ -27,7 +27,7 @@ def polynomial_moves_prediction(row):
     # Round to the nearest multiple of 10
     return round(float_prediction / 10) * 10
 
-# MSE SCORE: 
+# MSE SCORE: 120_000
 def static_features_prediction(row):
     """Make predictions using the trained StaticFeaturesSolution model"""
     # Load model if not already loaded
