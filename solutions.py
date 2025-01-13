@@ -3,16 +3,20 @@ import pandas as pd
 from typing import Union, Dict
 import joblib
 import os
-import sys
 from tqdm import tqdm
 import time
 from sklearn.metrics import mean_squared_error
 import chess
 from filters import filter_rating, filter_rating_deviation
-import numpy as np
 import chess.engine
+from system import STOCKFISH_BIN_PATH, TRAIN_DATA_PATH
+import numpy as np
+import random
 
-STOCKFISH_BIN_PATH = "C:\\Users\\Dell\\Desktop\\IEEE-BigData-2024-Cup\\stockfish\\stockfish-windows-x86-64-avx2.exe"
+RANDOM_SEED = 42  
+random.seed(RANDOM_SEED) 
+np.random.seed(RANDOM_SEED)  
+
 
 class Solution(ABC):
     """Abstract base class for chess puzzle rating prediction solutions."""
@@ -20,6 +24,7 @@ class Solution(ABC):
     def __init__(self):
         self.model = None
         self.pipeline = None
+        self.feature_names = None
         # Get the directory where solutions.py is located
         base_dir = os.path.dirname(os.path.abspath(__file__))
         # Create models directory in the same directory as solutions.py
@@ -43,12 +48,11 @@ class Solution(ABC):
         pass
     
     def save(self) -> None:
-        """Save the trained model."""
+        """Save the trained model and feature names."""
         print(f"Saving model to: {self.model_path}")
-        if self.model is not None:
-            joblib.dump(self.model, self.model_path)
-        elif self.pipeline is not None:
-            joblib.dump(self.pipeline, self.model_path)
+        if self.pipeline is not None:
+            # Save both pipeline and feature names
+            joblib.dump((self.pipeline, self.feature_names), self.model_path)
         else:
             raise ValueError("No model to save. Train the model first.")
     
@@ -58,6 +62,40 @@ class Solution(ABC):
             return self.predict_single(data)
         else:
             return [self.predict_single(row) for _, row in data.iterrows()]
+    
+    def load(self) -> None:
+        """Load pre-trained model."""
+        if os.path.exists(self.model_path):
+            try:
+                print(f"Loading model from: {self.model_path}")
+                loaded_data = joblib.load(self.model_path)
+                print(f"Loaded data type: {type(loaded_data)}")
+                
+                if isinstance(loaded_data, tuple):
+                    print("Found tuple data, unpacking pipeline and feature names...")
+                    self.pipeline, self.feature_names = loaded_data
+                    print(f"Pipeline type: {type(self.pipeline)}")
+                    print(f"Number of feature names: {len(self.feature_names) if self.feature_names else 'None'}")
+                else:
+                    print("Found single item, assuming it's pipeline...")
+                    self.pipeline = loaded_data
+                    self.feature_names = None
+                    print("Warning: Loading model in old format without feature names")
+                
+                # Verify pipeline is properly loaded
+                if hasattr(self.pipeline, 'predict'):
+                    print("Pipeline successfully loaded with predict method")
+                else:
+                    print(f"ERROR: Pipeline doesn't have predict method. Pipeline type: {type(self.pipeline)}")
+                    
+            except Exception as e:
+                print(f"Error loading model: {e}")
+                print(f"Error type: {type(e)}")
+                self.pipeline = None
+                self.feature_names = None
+                raise
+        else:
+            raise FileNotFoundError(f"No saved model found at {self.model_path}")
 
 class PolynomialMovesSolution(Solution):
     def __init__(self):
@@ -73,10 +111,6 @@ class PolynomialMovesSolution(Solution):
         
     def _create_features(self, moves_series: Union[pd.Series, str]) -> pd.DataFrame:
         """Create polynomial features from moves more efficiently."""
-
-        # Two cases:
-        # 1. A whole pd.Series of moves
-        # 2. A single move string
         if isinstance(moves_series, pd.Series):
             moves_count = moves_series.str.count(' ') + 1
         else:
@@ -148,14 +182,7 @@ class PolynomialMovesSolution(Solution):
             raise ValueError("Model not trained or loaded. Call train() or load() first.")
         
         X = self._create_features(row['Moves'])
-        return float(self.pipeline.predict(X)[0])
-    
-    def load(self) -> None:
-        """Load pre-trained model."""
-        if os.path.exists(self.model_path):
-            self.pipeline = joblib.load(self.model_path)
-        else:
-            raise FileNotFoundError(f"No saved model found at {self.model_path}")
+        return float(self.pipeline.predict(X)[0]) 
 
 class StaticFeaturesSolution(Solution):
     def __init__(self):
@@ -167,7 +194,7 @@ class StaticFeaturesSolution(Solution):
             ('xgb', XGBRegressor(
                 n_estimators=500,
                 learning_rate=0.05,
-                random_state=42,
+                random_state=RANDOM_SEED,
                 max_depth=12,
                 colsample_bytree=0.7,
                 reg_alpha=10,
@@ -444,13 +471,17 @@ class StaticFeaturesSolution(Solution):
             self._create_features(fen, moves) 
             for fen, moves in tqdm(zip(train_df['FEN'], train_df['Moves']))
         ])
-        y = train_df['Rating']        
-        self.pipeline.fit(X, y)
-        final_mse = mean_squared_error(y, self.pipeline.predict(X))
-        print(f"Final MSE on full dataset: {final_mse:.2f}")
+        y = train_df['Rating']
         
-        # Save the final model
-        self.model = self.pipeline
+        # Print feature names for verification
+        print("\nFeature names:")
+        print(sorted(X.columns.tolist()))
+        print(f"Total features: {len(X.columns)}")
+        
+        self.pipeline.fit(X, y)
+        
+        # Save feature names before saving model
+        self.feature_names = X.columns.tolist()
         self.save()
     
     def predict_single(self, row: pd.Series) -> float:
@@ -459,22 +490,22 @@ class StaticFeaturesSolution(Solution):
             raise ValueError("Model not trained or loaded. Call train() or load() first.")
         
         X = pd.DataFrame([self._create_features(row['FEN'], row['Moves'])])
+        
+        # Verify features match
+        missing_features = set(self.feature_names) - set(X.columns)
+        extra_features = set(X.columns) - set(self.feature_names)
+        if missing_features or extra_features:
+            raise ValueError(f"Feature mismatch!\nMissing: {missing_features}\nExtra: {extra_features}")
+        
         return float(self.pipeline.predict(X)[0])
     
-    def load(self) -> None:
-        """Load pre-trained model."""
-        if os.path.exists(self.model_path):
-            self.pipeline = joblib.load(self.model_path)
-        else:
-            raise FileNotFoundError(f"No saved model found at {self.model_path}")
-
 class StockfishSolution(StaticFeaturesSolution):
     def __init__(self):
         super().__init__()
         # Initialize Stockfish engine
+        self.feature_names = None
         try:
             self.engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_BIN_PATH)
-            # Set engine options (only those that aren't automatically managed)
             self.engine.configure({
                 "Threads": 4,
                 "Hash": 512
@@ -489,121 +520,176 @@ class StockfishSolution(StaticFeaturesSolution):
         if not self.engine:
             return {
                 'eval': 0,
-                'best_moves': [],
-                'mate_score': None
+                'best_lines': [],
+                'scores': []
             }
 
         try:
             board = chess.Board(fen)
-            # Analyze position with time limit and multipv
+            # Analyze position with fixed depth and top 3 moves
             info = self.engine.analyse(
                 board,
-                chess.engine.Limit(time=0.1),
+                chess.engine.Limit(depth=3),
                 multipv=3
             )
             
-            # Process evaluation from main line
-            main_line = info[0]
-            score = main_line["score"].relative.score()
-            mate_score = main_line["score"].relative.mate()
+            # Process scores carefully, handling mate scores
+            scores = []
+            for line in info:
+                if "score" in line:
+                    score = line["score"].relative
+                    # Convert mate scores to high numerical values
+                    if score.is_mate():
+                        mate_score = score.mate()
+                        scores.append(10000 if mate_score > 0 else -10000)
+                    else:
+                        # Use score if available, otherwise 0
+                        scores.append(score.score() if score.score() is not None else 0)
             
             return {
-                'eval': score if score is not None else (10000 if mate_score > 0 else -10000),
-                'best_moves': [line["pv"][0] for line in info if "pv" in line],
-                'mate_score': mate_score
+                'best_lines': [line["pv"] for line in info if "pv" in line],
+                'scores': scores
             }
             
         except Exception as e:
             print(f"Error in Stockfish evaluation: {e}")
             return {
-                'eval': 0,
-                'best_moves': [],
-                'mate_score': None
+                'best_lines': [],
+                'scores': []
             }
 
     def _create_features(self, fen: str, moves: str) -> dict:
         """Create features from position and moves, including Stockfish analysis."""
+        # Define all features we expect with default values
+        stockfish_features = {
+            # Score-based features
+            'best_move_score': 0,
+            'second_best_score': 0,
+            'third_best_score': 0,
+            'score_diff_1_2': 0,
+            'score_diff_2_3': 0,
+            
+            # Move matching features
+            'matches_best_move': 0,
+            'matches_second_best': 0,
+            'matches_third_best': 0,
+            'matches_any_top_3': 0,
+            
+            # Continuation features
+            'continuation_matches_best': 0,
+            'continuation_matches_second': 0,
+            'continuation_matches_third': 0,
+            'continuation_matches_any': 0
+        }
+        
         # Get all static features from parent class
         features = super()._create_features(fen, moves)
         
-        # Add Stockfish-based features
-        stockfish_eval = self._get_stockfish_evaluation(fen)
-        
-        # 1. Position evaluation features
-        features.update({
-            'stockfish_eval': stockfish_eval['eval'],
-            'stockfish_mate_in': stockfish_eval['mate_score'] if stockfish_eval['mate_score'] else 0,
-            'is_mate_position': 1 if stockfish_eval['mate_score'] is not None else 0,
-        })
-        
-        # 2. Best move analysis
-        best_moves = stockfish_eval['best_moves']
-        features.update({
-            'num_good_moves': len(best_moves),
-            'best_move_matches': 1 if moves.split()[0] in [m.uci() for m in best_moves] else 0,
-        })
-        
-        # 3. Position complexity analysis
-        board = chess.Board(fen)
+        # Convert moves to a list
         move_list = moves.split()
+        if not move_list:
+            features.update(stockfish_features)
+            return features
         
         try:
-            # Analyze position after each move
-            cumulative_eval_change = 0
-            eval_changes = []
+            # Set up board and play opponent's first move
+            board = chess.Board(fen)
+            first_move = move_list[0]
+            board.push_uci(first_move)
             
-            current_eval = stockfish_eval['eval']
-            for move in move_list:
-                board.push_uci(move)
-                next_eval = self._get_stockfish_evaluation(board.fen())['eval']
-                eval_change = abs(next_eval - current_eval)
-                
-                cumulative_eval_change += eval_change
-                eval_changes.append(eval_change)
-                current_eval = next_eval
-                
-            # Add complexity and tactical features
-            features.update({
-                'position_volatility': np.std(eval_changes) if eval_changes else 0,
-                'avg_eval_change': cumulative_eval_change / len(move_list) if move_list else 0,
-                'max_eval_change': max(eval_changes) if eval_changes else 0,
-                'final_position_eval': current_eval,
-                'eval_improvement': current_eval - stockfish_eval['eval'],
-                'involves_sacrifice': 1 if any(ec > 100 for ec in eval_changes) else 0,
-                'position_sharpness': sum(1 for ec in eval_changes if ec > 50) / len(eval_changes) if eval_changes else 0,
-                'requires_precise_play': 1 if len(best_moves) == 1 and abs(stockfish_eval['eval']) > 100 else 0,
-            })
+            # Now analyze the position after opponent's move
+            stockfish_eval = self._get_stockfish_evaluation(board.fen())
+            best_lines = stockfish_eval['best_lines']
+            scores = stockfish_eval['scores']
             
+            # Get our response moves (all moves after the first one)
+            our_moves = move_list[1:]
+                       
+            if best_lines and scores:
+                # 1. Score-based features (with safe score handling)
+                stockfish_features.update({
+                    'best_move_score': scores[0] if scores else 0,
+                    'second_best_score': scores[1] if len(scores) > 1 else scores[0] if scores else 0,
+                    'third_best_score': scores[2] if len(scores) > 2 else scores[0] if scores else 0,
+                    'score_diff_1_2': (scores[0] - scores[1]) if len(scores) > 1 else 0,
+                    'score_diff_2_3': (scores[1] - scores[2]) if len(scores) > 2 else 0,
+                })
+                
+                # 2. Move matching features
+                first_response = our_moves[0] if our_moves else None
+                if first_response:
+                    stockfish_features.update({
+                        'matches_best_move': 1 if any(first_response == line[0].uci() for line in best_lines[:1]) else 0,
+                        'matches_second_best': 1 if any(first_response == line[0].uci() for line in best_lines[1:2]) else 0,
+                        'matches_third_best': 1 if any(first_response == line[0].uci() for line in best_lines[2:3]) else 0,
+                        'matches_any_top_3': 1 if any(first_response == line[0].uci() for line in best_lines) else 0,
+                    })
+                
+                # 3. Line similarity features
+                if first_response:
+                    subsequent_moves = our_moves[1:]
+                    best_continuations = [line[1:min(len(line), len(subsequent_moves) + 1)] for line in best_lines]
+                    
+                    
+                    stockfish_features.update({
+                        'continuation_matches_best': sum(1 for i, move in enumerate(subsequent_moves) 
+                                                       if i < len(best_continuations[0]) and 
+                                                       move == best_continuations[0][i].uci()) if best_continuations else 0,
+                        'continuation_matches_second': sum(1 for i, move in enumerate(subsequent_moves)
+                                                         if len(best_continuations) > 1 and 
+                                                         i < len(best_continuations[1]) and 
+                                                         move == best_continuations[1][i].uci()) if len(best_continuations) > 1 else 0,
+                        'continuation_matches_third': sum(1 for i, move in enumerate(subsequent_moves)
+                                                        if len(best_continuations) > 2 and 
+                                                        i < len(best_continuations[2]) and 
+                                                        move == best_continuations[2][i].uci()) if len(best_continuations) > 2 else 0,
+                        'continuation_matches_any': sum(1 for move in subsequent_moves 
+                                                      if any(i < len(line) and move == line[i].uci() 
+                                                            for line in best_continuations 
+                                                            for i in range(len(move))))
+                    })
+                
+            else:
+                # Default values if analysis fails
+                features.update({
+                    'best_move_score': 0,
+                    'second_best_score': 0,
+                    'third_best_score': 0,
+                    'score_diff_1_2': 0,
+                    'score_diff_2_3': 0,
+                    'matches_best_move': 0,
+                    'matches_second_best': 0,
+                    'matches_third_best': 0,
+                    'matches_any_top_3': 0,
+                    'continuation_matches_best': 0,
+                    'continuation_matches_second': 0,
+                    'continuation_matches_third': 0,
+                    'continuation_matches_any': 0,
+                })
+                
         except Exception as e:
             print(f"Error in Stockfish feature creation: {e}")
-            # Provide default values if analysis fails
-            features.update({
-                'position_volatility': 0,
-                'avg_eval_change': 0,
-                'max_eval_change': 0,
-                'final_position_eval': 0,
-                'eval_improvement': 0,
-                'involves_sacrifice': 0,
-                'position_sharpness': 0,
-                'requires_precise_play': 0,
-            })
-        
+
+        features.update(stockfish_features)
         return features
 
-    def train(self, train_df: pd.DataFrame) -> None:
-        """Train model using Bayesian optimization for hyperparameter tuning."""        
+    def train(self, train_df: pd.DataFrame) -> None:     
         print("Creating features...")
         X = pd.DataFrame([
             self._create_features(fen, moves) 
             for fen, moves in tqdm(zip(train_df['FEN'], train_df['Moves']))
         ])
-        y = train_df['Rating']        
-        self.pipeline.fit(X, y)
-        final_mse = mean_squared_error(y, self.pipeline.predict(X))
-        print(f"Final MSE on full dataset: {final_mse:.2f}")
+        y = train_df['Rating']
         
-        # Save the final model
-        self.model = self.pipeline
+        # Print feature names for verification
+        print("\nFeature names:")
+        print(sorted(X.columns.tolist()))
+        print(f"Total features: {len(X.columns)}")
+        
+        self.pipeline.fit(X, y)
+        
+        # Save feature names with the model
+        self.feature_names = X.columns.tolist()
         self.save()
     
     def predict_single(self, row: pd.Series) -> float:
@@ -612,6 +698,16 @@ class StockfishSolution(StaticFeaturesSolution):
             raise ValueError("Model not trained or loaded. Call train() or load() first.")
         
         X = pd.DataFrame([self._create_features(row['FEN'], row['Moves'])])
+        
+        # Verify features match if we have feature names
+        if self.feature_names is not None:
+            missing_features = set(self.feature_names) - set(X.columns)
+            extra_features = set(X.columns) - set(self.feature_names)
+            if missing_features or extra_features:
+                raise ValueError(f"Feature mismatch!\nMissing: {missing_features}\nExtra: {extra_features}")
+        else:
+            print("Warning: No feature names available. Skipping feature verification.")
+        
         return float(self.pipeline.predict(X)[0])
 
     def close(self):
@@ -629,11 +725,22 @@ class StockfishSolution(StaticFeaturesSolution):
 
 if __name__ == "__main__":
     # Example training script
-    train_df = pd.read_csv('C:\\Users\\Dell\\Desktop\\IEEE-BigData-2024-Cup\\data\\lichess_db_puzzle.csv')
+    train_df = pd.read_csv(TRAIN_DATA_PATH)
     train_df = filter_rating(train_df, 400, 3000)
     train_df = filter_rating_deviation(train_df, 0, 200)
-    train_df = train_df.sample(n=10_000, random_state=42)
-
+    
+    # Start with a small sample for testing
+    train_df = train_df.sample(n=1000, random_state=42)
+    
+    print("Training StockfishSolution with all features...")
     solution = StockfishSolution()
     solution.train(train_df)
-    print("Model trained and saved successfully.")   
+    print("Model trained and saved successfully.")
+    
+    # Test prediction
+    test_row = train_df.iloc[0]
+    pred = solution.predict_single(test_row)
+    print(f"Test Real: {test_row['Rating']} Test prediction: {pred}")
+    
+    # Clean up
+    solution.close()   
