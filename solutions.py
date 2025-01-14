@@ -7,11 +7,12 @@ from tqdm import tqdm
 import time
 from sklearn.metrics import mean_squared_error
 import chess
-from filters import filter_rating, filter_rating_deviation
+from filters import filter_rating, filter_rating_deviation, filter_popularity
 import chess.engine
 from system import STOCKFISH_BIN_PATH, TRAIN_DATA_PATH
 import numpy as np
 import random
+import matplotlib.pyplot as plt
 
 RANDOM_SEED = 42  
 random.seed(RANDOM_SEED) 
@@ -197,9 +198,7 @@ class StaticFeaturesSolution(Solution):
                 random_state=RANDOM_SEED,
                 max_depth=12,
                 colsample_bytree=0.7,
-                reg_alpha=10,
                 tree_method='hist',   
-                min_child_weight=1,
                 objective='reg:squarederror'
             ))
         ])
@@ -673,14 +672,20 @@ class StockfishSolution(StaticFeaturesSolution):
         features.update(stockfish_features)
         return features
 
-    def train(self, train_df: pd.DataFrame) -> None:     
+    def train(self, train_df: pd.DataFrame, cont=False) -> None:     
         print("Creating features...")
-        X = pd.DataFrame([
-            self._create_features(fen, moves) 
-            for fen, moves in tqdm(zip(train_df['FEN'], train_df['Moves']))
-        ])
-        y = train_df['Rating']
+        if cont:
+            y = train_df['rating']
+            X = train_df.drop(columns=['rating'])
+        else:
+            X = pd.DataFrame([
+                self._create_features(fen, moves) 
+                for fen, moves in tqdm(zip(train_df['FEN'], train_df['Moves']))
+            ])
+            y = train_df['Rating']
         
+        #X['rating'] = y
+        #X.to_csv('stockfish_features.csv')
         # Print feature names for verification
         print("\nFeature names:")
         print(sorted(X.columns.tolist()))
@@ -722,25 +727,208 @@ class StockfishSolution(StaticFeaturesSolution):
         """Cleanup: Make sure to close the engine properly."""
         self.close()
 
+class EngineFeaturesOnlySolution(Solution):
+    """
+    A solution that uses only engine-based features to predict puzzle difficulty,
+    focusing on forced moves, evaluation differences, and tactical complexity.
+    """
+    def __init__(self):
+        super().__init__()
+        from xgboost import XGBRegressor
+        
+        try:
+            self.engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_BIN_PATH)
+            self.engine.configure({
+                "Threads": 4,
+                "Hash": 512
+            })
+        except Exception as e:
+            print(f"Error initializing Stockfish: {e}")
+            self.engine = None       
+        
+        self.pipeline = XGBRegressor(
+            n_estimators=300,
+            learning_rate=0.05,
+            random_state=RANDOM_SEED,
+            max_depth=8,
+            colsample_bytree=0.8,
+            reg_alpha=5,
+            tree_method='hist',
+            objective='reg:squarederror',
+            max_leaves=32,
+            min_child_weight=5, 
+        )
+
+    def _analyze_position(self, board: chess.Board, depth: int = 10) -> dict:
+        """Analyze position with engine to extract tactical features."""
+        features = {
+            'forced_move_count': 0,
+            'eval_best': 0,
+            'eval_2nd_best': 0,
+            'score_diff_1_2': 0,
+            'position_complexity': 0,
+            'tactical_opportunities': 0,
+            'quiet_position': 1,  # default to quiet
+            'mate_distance': 0
+        }
+        
+        if not self.engine:
+            return features
+            
+        try:
+            # Get multipv analysis for top 3 moves
+            analysis = self.engine.analyse(
+                board,
+                chess.engine.Limit(depth=depth),
+                multipv=3
+            )
+            
+            # Process scores carefully
+            scores = []
+            for line in analysis:
+                if "score" in line:
+                    score = line["score"].relative
+                    if score.is_mate():
+                        mate_score = score.mate()
+                        scores.append(10000 if mate_score > 0 else -10000)
+                        if len(scores) == 1:  # if best move is mate
+                            features['mate_distance'] = abs(mate_score)
+                    else:
+                        scores.append(score.score() if score.score() is not None else 0)
+            
+            if scores:
+                features['eval_best'] = scores[0]
+                if len(scores) > 1:
+                    features['eval_2nd_best'] = scores[1]
+                    features['score_diff_1_2'] = scores[0] - scores[1]
+                    
+                    # Count moves within 50cp of best move as "forced"
+                    features['forced_move_count'] = sum(1 for s in scores if abs(scores[0] - s) <= 50)
+                    
+                    # Position complexity: high if many moves are close in evaluation
+                    features['position_complexity'] = sum(1 for s in scores if abs(scores[0] - s) <= 100)
+                    
+                    # Tactical opportunities: high if big eval swings between moves
+                    features['tactical_opportunities'] = max(abs(scores[0] - s) for s in scores[1:])
+                    
+                    # Quiet position: false if best move is significantly better
+                    features['quiet_position'] = int(features['score_diff_1_2'] < 100)
+            
+        except Exception as e:
+            print(f"Error in engine analysis: {e}")
+            
+        return features
+
+    def _create_features(self, fen: str, moves: str) -> dict:
+        """Create engine-based features from the position after opponent's first move."""
+        board = chess.Board(fen)
+        features = {}
+        
+        # Determine if puzzle solver is white
+        features['is_player_white'] = not board.turn
+        
+        # Apply opponent's first move
+        move_list = moves.split()
+        if move_list:
+            try:
+                first_move = chess.Move.from_uci(move_list[0])
+                if first_move in board.legal_moves:
+                    board.push(first_move)
+            except (ValueError, IndexError) as e:
+                print(f"Error applying first move: {e}")
+        
+        # Get engine analysis features
+        engine_features = self._analyze_position(board)
+        features.update(engine_features)
+        
+        return features
+
+    def train(self, train_df: pd.DataFrame) -> None:
+        """
+        Train model using the engine-based features with statistical awareness.
+        """
+        print("Creating features...")
+        X = pd.DataFrame([
+            self._create_features(fen, moves) 
+            for fen, moves in tqdm(zip(train_df['FEN'], train_df['Moves']))
+        ])
+        y = train_df['Rating']
+        
+        # Print feature names for verification
+        print("\nFeature names:")
+        print(sorted(X.columns.tolist()))
+        print(f"Total features: {len(X.columns)}")
+        
+        # Fit the model
+        print("Training model...")
+        self.pipeline.fit(X, y)
+        
+        # Save feature names before saving model
+        self.feature_names = X.columns.tolist()
+        self.save()
+        
+        # Print training MSE and statistics
+        train_preds = self.pipeline.predict(X)
+        mse = mean_squared_error(y, train_preds)
+        print(f"Training MSE: {mse:.2f}")
+        print(f"Prediction mean: {np.mean(train_preds):.2f} (target: {MEAN})")
+        print(f"Prediction std: {np.std(train_preds):.2f} (target: {STD})")
+
+    def predict_single(self, row: pd.Series) -> float:
+        """Predict rating for a single puzzle."""
+        if self.pipeline is None:
+            raise ValueError("Model not trained or loaded. Call train() or load() first.")
+        
+        X = pd.DataFrame([self._create_features(row['FEN'], row['Moves'])])
+        
+        # Verify features match
+        if self.feature_names is not None:
+            missing_features = set(self.feature_names) - set(X.columns)
+            extra_features = set(X.columns) - set(self.feature_names)
+            if missing_features or extra_features:
+                raise ValueError(f"Feature mismatch!\nMissing: {missing_features}\nExtra: {extra_features}")
+        
+        return float(self.pipeline.predict(X)[0])
+
+    def close(self):
+        """Properly close the engine."""
+        if hasattr(self, 'engine') and self.engine:
+            try:
+                self.engine.quit()
+            except chess.engine.EngineTerminatedError:
+                pass
+
+    def __del__(self):
+        """Cleanup: Make sure to close the engine properly."""
+        self.close()
+
 
 if __name__ == "__main__":
     # Example training script
-    train_df = pd.read_csv(TRAIN_DATA_PATH)
-    train_df = filter_rating(train_df, 400, 3000)
-    train_df = filter_rating_deviation(train_df, 0, 200)
+    #train_df = pd.read_csv(TRAIN_DATA_PATH)
+    #train_df = filter_rating(train_df, 500, 2850)
+    #train_df = filter_rating_deviation(train_df, 0, 100)
+    #train_df = filter_popularity(train_df, 50, 1000)
+    #print("Number of valid rows: ", len(train_df))
     
     # Start with a small sample for testing
-    train_df = train_df.sample(n=1000, random_state=42)
+    #train_df = train_df.sample(n=500_000, random_state=RANDOM_SEED)
     
     print("Training StockfishSolution with all features...")
+    train_df = pd.read_csv('./stockfish_features.csv')
+    train_df.dropna(inplace=True)
+    train_df.drop(columns=['Unnamed: 0'], inplace=True)
     solution = StockfishSolution()
-    solution.train(train_df)
+    solution.train(train_df, cont=True)
     print("Model trained and saved successfully.")
     
     # Test prediction
-    test_row = train_df.iloc[0]
-    pred = solution.predict_single(test_row)
-    print(f"Test Real: {test_row['Rating']} Test prediction: {pred}")
+    try:
+        test_row = train_df.iloc[0]
+        pred = solution.predict_single(test_row)
+        print(f"Test Real: {test_row['Rating']} Test prediction: {pred}")
+    except KeyError as e:
+        print(e)
     
     # Clean up
     solution.close()   
